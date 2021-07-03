@@ -1,0 +1,193 @@
+# Database Building Blocks
+B-Trees and LSM trees
+17:00 3 Jul 2021
+
+Kennedy Mwenja
+Computing Enthusiast
+
+## Why
+
+- Deeper understanding of storage engines
+- Helps with choosing or tuning storage
+- Design of Data Intensive Applications by Martin Kleppmann
+
+## Agenda
+
+ - Key value abstraction
+ - Memory storage
+ - Disk storage
+ - B[+]-Trees
+ - LSM trees
+
+## Out of Scope
+
+ - Comprehensive analysis
+ - OLAP storage
+ - Other database features
+
+## How does a database store data?
+
+## Key Value Abstraction
+
+- address -> register, memory cell
+- variable -> value
+- filename -> bytes
+- url -> web resource
+- record id -> record
+- row + column -> value, cell
+
+## Key Value Abstraction (contd.)
+
+- index: a data structure used to efficiently find things
+- primary index: used to find keys
+- key+value can be stored separately from index
+
+.image index.png
+
+## Memory storage
+
+- Lists: O(n)
+- Hash maps: mostly O(1); range, sequential access is O(n log n)
+- Binary trees: O(log n) [if balanced]
+- Sorting things helps with range and sequential access
+
+- Limited by volatility and size
+
+## Latency numbers (2020)
+
+- memory reference -> 100 nanoseconds (< 10 ns if in CPU cache)
+- memory read 1MB seq -> 2000 ns
+- SSD random read -> 16,000 ns
+- SSD read 1MB seq -> 49,000 ns
+- HDD seek -> 2,000,000 ns (2 milliseconds)
+- HDD read 1MB seq -> 825,000 ns (under a millisecond)
+
+- A good rule of thumb is to use 10 milliseconds to approx disk iops
+- [Latency numbers](https://colin-scott.github.io/personal_website/research/interactive_latency.html)
+
+## Disk storage
+
+- Memory is direct addressing, Disks use blocks
+- Append is much much faster than random read/write
+- Hashmap/Binary tree on disk: seek times would add up due to random read/write
+- Need better data structures that fit disk properties
+- Note: Modern OSes cache disk iops
+
+## B[+]-Trees
+
+- B is ambiguous
+- B-Tree is a generalized self balancing search tree which is O(log n)
+- Needs infrequent balancing ops
+- Nodes can have more than 2 children (each node has high fanout)
+- Has a concept of branching factor (maximum number of children)
+- The height of a B-Tree is O(logb n) where b is the branching factor
+- Means node can be aligned with disk block size
+- Original Btree, root and internal nodes stored both key and value, leaves don't carry anything
+- B+Tree, root and internal nodes store only keys while leaves store key+value
+- Also in B+Tree, leaves can have pointer to next leaf to speed up sequential access
+- B+Tree also have higher fanout (can have more children)
+
+## B[+]-Trees (contd.)
+
+.image B-tree.svg
+
+## B[+]-Trees: Searching
+
+- Imagine searching for a key in a BST on disk for 1 million records
+- O(log n) -> log2 1m ~= 20 random reads @ 10ms ~= 200 milliseconds
+- (less comparisons because multiple keys can be in 1 single disk block)
+- B-Tree on disk, would have each node in a fixed size disk block (known as a page)
+- Links between nodes now become links between pages on disk
+- Search would open the first page (root), find the right branch, open that page...
+- ...until it finds the page with the matching key
+- Because the height of a B-Tree is O(logb n), a B-Tree with b=10 will have a depth of 6
+- 6 page fetches ~= 6 random reads @ 10ms ~= 60ms
+- if b=100 ~= 3 page fetches ~= 30ms
+- [aligning size of page](https://www.evanjones.ca/write-latency-alignment.html) to disk sectors makes this very powerful
+- OS disk page caching may even mean that some pages may always be in memory
+
+## B[+]-Tree: Advantages
+
+- Fast reads on disks
+- Read/Write speed scales with disk speed (SSDs make them go faster)
+- Reduced write amplification (pages are updated in place, maybe duplication in WAL)
+- Stabler latency compared to LSM (LSM compaction can be disruptive)
+- Key occurs once making it easy to lock its use to support transactions
+
+## B[+]-Tree: Limitations
+
+- Writes are slow when pages have to be "re-balanced". Not good for frequent writes.
+- Writes still involve disk seek
+- Need for WAL to prevent data loss during page modifications. Duplicates data.
+- Harder to keep pages in sequential order on disk for faster seq reads
+
+## B-Tree: Databases
+
+- B-Tree is very commonly used (intro'd in 1970)
+- B-Tree often used for secondary indexes while B+Tree used to store tables (with primary index)
+- PostgreSQL, MySQL, Oracle, SQLite, ...
+- These databases often feature other types of indexes (e.g. hashmap indexes) but the main table is usually stored in some kind of B-Tree
+- For Go Devs, [BoltDB](https://github.com/boltdb/bolt)
+
+## LSM Trees
+
+- Not actually a data structure but a logical arrangement of data
+- It's a tree of data structures, where each level of the tree is in a different medium and optimized for that medium
+- Usually a 2 levelled tree with the first data structure in memory and the other on disk
+- Both data structures keep data sorted.
+- Incoming data is first written to the memory data structure
+- When the memory data structure reaches a certain size threshold, the currently accumulated data is then written to disk
+- Data is written to disk in its sorted form and writes are append only
+- This data is then considered immutable (that file will never be written again)
+
+## LSM Trees (contd.)
+
+.image LSM-tree.png
+
+## LSM Trees: Key Duplication, Deletes, Compaction
+
+- As more data comes in, you end up with a bunch of sorted individual segments of data written to disk
+- Unique keys can be written multiple times (if the key keeps getting updates) so the same key may occur in multiple segments
+- Because data written to disk is immutable, deletions are handled by writing the deleted key with a "deleted marker" (often known as a tombstone)
+- To minimize key duplication and to effect tombstones, a process called "compaction" occasionally occurs in the background
+- Compaction will gather up a set of segments and merge them together into a new file (append-only)
+- Once the new file is created, the source segments are deleted
+- Compaction is often tuned to start after the number of segments reach a certain number
+- Compaction can also be limited from forming "too-large" segments
+
+## LSM Trees: Searching
+
+- Searching an LSM is multi staged
+- Search the memory data structure, if not there, search each segment
+- Because segments are sorted, searching segments doesn't require reading from the segment
+- You can simply check if the key can exist in the range stored in the segment
+- This can be made even more efficient if there's a secondary index of these ranges in memory (usually as a bloom filter)
+- Compaction also makes this more efficient by reducing the number of segments over time.
+- Key duplication and deletion complicates this
+
+## LSM Trees: Advantages
+
+- Because disk writes are append-only, writes are very fast. Good for high throughput systems.
+- Reads can be very fast with memory bloom filters
+- Keys are kept in sequential order on disk making sequential access very fast
+
+## LSM Trees: Limitations
+
+- Compaction consumes disk IOPS that may be needed for writes and reads
+- If compaction is frequent, read/write latency can be unstable
+- Key duplication complicates implementing transactions
+- Due to key duplication and compaction creating temporary files, LSMs have high write amplification (more disk usage than actual data size)
+- May need WAL for segment in memory (another factor in write amplification)
+
+## LSM Trees: Databases
+
+- [SQLite4](https://www.sqlite.org/src4/doc/trunk/www/index.wiki)
+- Google Bigtable
+- Apache Cassandra
+- For Go devs, [Badger](https://github.com/dgraph-io/badger)
+
+## References
+
+- [Btree in Build Database Tutorial](https://cstack.github.io/db_tutorial/parts/part7.html)
+- [LSM Trees](https://medium.com/databasss/on-disk-io-part-3-lsm-trees-8b2da218496f)
+- [Latency numbers in 2012, read the comments](https://gist.github.com/jboner/2841832)
