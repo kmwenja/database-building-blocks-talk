@@ -2,8 +2,6 @@
 
 Material for the Database Building Blocks talk held at the remote meetup of Nairobi LUG on 3rd July 2021.
 
-You can also view the talk online by going to https://talks.godoc.org/github.com/kmwenja/database-building-blocks-talk/talk.slide.
-
 ## Run the presentation locally:
 
 1. Setup a Go environment: https://golang.org/doc/install
